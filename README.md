@@ -13,4 +13,6 @@ The structures of `src` are as follows:
   -  PyTorch=1.9.0
   -  DGL=0.6.1
   -  sklearn
-  You can check the tunable parameters in `run_crosstres.py`. 
+- `run_crosstres_rt.py`: The implementation of CrossTReS which uses RegionTrans for fine-tuning. 
+
+You can check the tunable parameters in `run_crosstres.py`. 

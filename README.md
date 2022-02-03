@@ -15,4 +15,6 @@ The structures of `src` are as follows:
   -  sklearn
 - `run_crosstres_rt.py`: The implementation of CrossTReS which uses RegionTrans for fine-tuning. 
 
-You can check the tunable parameters in `run_crosstres.py`. 
+You can check the tunable parameters in `run_crosstres.py` and `run_crosstres_rt.py`. 
+
+Note: Running`run_crosstres.py` requires approximately 10GB GPU memory with batch_size=32. You can reduce batch_size to reduce memory cost. 

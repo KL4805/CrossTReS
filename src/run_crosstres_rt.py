@@ -405,7 +405,7 @@ mmd = MMD_loss()
 if args.model == 'STResNet':
     net = STResNet(len(lag), 1, 3).to(device)
 elif args.model == 'STNet_nobn':
-    net = STNet_nobn(1, 3, th_mask_target).to(device)
+    net = STNet_nobn(1, 3, th_mask_target, sigmoid_out = True).to(device)
     print(net) 
 elif args.model == 'STNet':
     net = STNet(1, 3, th_mask_target).to(device) 

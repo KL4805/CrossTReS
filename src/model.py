@@ -467,7 +467,7 @@ class STNet(nn.Module):
             return output
 
 class STNet_nobn(nn.Module):
-    def __init__(self, num_channels, num_convs, spatial_mask):
+    def __init__(self, num_channels, num_convs, spatial_mask, sigmoid_out = False):
         super(STNet_nobn, self).__init__()
         self.num_channels = num_channels
         self.spatial_mask = spatial_mask.bool()
@@ -483,6 +483,7 @@ class STNet_nobn(nn.Module):
         self.lstm = nn.LSTM(64, 128)
         self.linear1 = nn.Linear(128 * 2, 64)
         self.linear2 = nn.Linear(64, 1)
+        self.sigmoid_out = sigmoid_out
     
     def forward(self, X, spatial_mask = None, return_feat = False):
         if spatial_mask is None:
@@ -512,8 +513,10 @@ class STNet_nobn(nn.Module):
         temporal_valid = temporal[:, spatial_mask.view(-1), :]
         # print("temporal", temporal.shape)
         hid = F.relu(self.linear1(temporal_valid))
-        output = torch.sigmoid(self.linear2(hid)).permute(0, 2, 1)
+        output = self.linear2(hid).permute(0, 2, 1)
         # Batch, 1, # validpoints
+        if self.sigmoid_out:
+            output = torch.sigmoid(output)
         if return_feat: 
             return temporal, output
         else:
@@ -560,7 +563,9 @@ class STNet_nobn(nn.Module):
         temporal = torch.cat([temporal_out.view(batch_size, -1, 128), temporal_hid.view(batch_size, -1, 128)], dim = -1)
         temporal_valid = temporal[:, spatial_mask.view(-1), :]
         hid = F.relu(F.linear(temporal_valid, weights['linear1.weight'], weights['linear1.bias']))
-        output = torch.sigmoid(F.linear(hid, weights['linear2.weight'], weights['linear2.bias'])).permute(0, 2, 1)
+        output = F.linear(hid, weights['linear2.weight'], weights['linear2.bias']).permute(0, 2, 1)
+        if self.sigmoid_out:
+            output = torch.sigmoid(output)
         if return_feat:
             return temporal, output
         else:

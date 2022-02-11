@@ -1,5 +1,5 @@
 # CrossTReS
-Repo for CrossTReS: Cross-city Transfer Learning for Traffic Prediction via Source Region Selection
+Repo for Selective Cross-city Transfer Learning for Traffic Prediction via Source City Region Re-weighting
 
 ## Step 1: Data
 Go to `data` repo and unzip the `crosstres_data.zip` file. 
@@ -14,7 +14,14 @@ The structures of `src` are as follows:
   -  DGL=0.6.1
   -  sklearn
 - `run_crosstres_rt.py`: The implementation of CrossTReS which uses RegionTrans for fine-tuning. 
+- `gen_rt_dict.py`: This script generates the dictionary for RegionTrans to do matching. 
 
 You can check the tunable parameters in `run_crosstres.py` and `run_crosstres_rt.py`. 
 
 Note: Running`run_crosstres.py` requires approximately 10GB GPU memory with batch_size=32. You can reduce batch_size to reduce memory cost. 
+
+## Procedures to run the scripts
+- `run_crosstres.py`: `python run_crosstres.py --SET_PARAMETERS`. 
+- `run_crosstres_rt.py`: 
+    - First, run `python gen_rt_dict.py --metric poi --source [NY, CHI] --target [DC]`. You will get a file under the `src/rt_dict` folder. 
+    - Then, run `python run_crosstres_rt.py --SET_PARAMETERS --rt_dict poi`. 

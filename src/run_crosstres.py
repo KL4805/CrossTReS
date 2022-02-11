@@ -45,7 +45,8 @@ parser.add_argument("--weight_reg", type=float, default=1e-3, help="Regularizer 
 parser.add_argument("--pretrain_iter", type=int, default=-1, help='Pre-training iterations per pre-training epoch. ')
 parser.add_argument("--log_name", type=str, default=None, help='Filename for log file')
 parser.add_argument('--save_name', type=str, default=None, help='Filename for saving the model.')
-parser.add_argument('--metatrain_emb', type=bool, default=False, help='Whether to involve embedding model in meta learning')
+parser.add_argument("--rt_weight", type=float, default = 0.0002, help='weight for the regiontrans objective')
+parser.add_argument('--rt_dict', type=str, default = 'poi', help='path of the dictionary for regiontrans')
 args = parser.parse_args()
 
 if args.seed != -1:
@@ -66,7 +67,7 @@ tcity = args.tcity
 datatype = args.datatype 
 num_epochs = args.num_epochs 
 start_time = time.time() 
-print("Running CrossTReS, from %s to %s, %s %s experiments, with %d days of data, on %s model" % \
+print("Running CrossTReS-RT, from %s to %s, %s %s experiments, with %d days of data, on %s model" % \
     (scity, tcity, dataname, datatype, args.data_amount, args.model)) 
 
 # Load spatio temporal data
@@ -89,6 +90,22 @@ lag = [-6, -5, -4, -3, -2, -1]
 source_data, smax, smin = min_max_normalize(source_data)
 target_data, max_val, min_val = min_max_normalize(target_data)
 
+# compute bias for the date
+bias = 0
+if args.scity == 'CHI':
+    if args.tcity == 'DC':
+        bias = 0
+    elif args.tcity == 'BOS':
+        bias = -6 * 24
+elif args.scity == 'NY':
+    if args.tcity == 'DC':
+        if dataname == 'Bike':
+            bias = 0
+        elif dataname == 'Taxi':
+            bias = -5 * 24
+    elif args.tcity == 'BOS': 
+        bias = -6 * 24
+
 source_train_x, source_train_y, source_val_x, source_val_y, source_test_x, source_test_y = split_x_y(source_data, lag)
 # we concatenate all source data
 source_x = np.concatenate([source_train_x, source_val_x, source_test_x], axis = 0)
@@ -97,6 +114,12 @@ target_train_x, target_train_y, target_val_x, target_val_y, target_test_x, targe
 if args.data_amount != 0:
     target_train_x = target_train_x[-args.data_amount * 24:, :, :, :]
     target_train_y = target_train_y[-args.data_amount * 24:, :, :, :]
+    if bias != 0:
+        source_train_x = source_train_x[-args.data_amount * 24 + bias:bias, :, :, :]
+        source_train_y = source_train_y[-args.data_amount * 24 + bias:bias, :, :, :]
+    else:
+        source_train_x = source_train_x[-args.data_amount * 24:, :, :, :]
+        source_train_y = source_train_y[-args.data_amount * 24:, :, :, :]
 print("Source split to: x %s, y %s" % (str(source_x.shape), str(source_y.shape)))
 # print("val_x %s, val_y %s" % (str(source_val_x.shape), str(source_val_y.shape)))
 # print("test_x %s, test_y %s" % (str(source_test_x.shape), str(source_test_y.shape))) 
@@ -105,7 +128,9 @@ print("Target split to: train_x %s, train_y %s" % (str(target_train_x.shape), st
 print("val_x %s, val_y %s" % (str(target_val_x.shape), str(target_val_y.shape)))
 print("test_x %s, test_y %s" % (str(target_test_x.shape), str(target_test_y.shape)))
 
-target_train_dataset = TensorDataset(torch.Tensor(target_train_x), torch.Tensor(target_train_y))
+
+
+target_train_dataset = TensorDataset(torch.Tensor(source_train_x), torch.Tensor(source_train_y), torch.Tensor(target_train_x), torch.Tensor(target_train_y))
 target_val_dataset = TensorDataset(torch.Tensor(target_val_x), torch.Tensor(target_val_y))
 target_test_dataset = TensorDataset(torch.Tensor(target_test_x), torch.Tensor(target_test_y))
 target_train_loader = DataLoader(target_train_dataset, batch_size = args.batch_size, shuffle = True)
@@ -115,6 +140,21 @@ source_test_dataset = TensorDataset(torch.Tensor(source_test_x), torch.Tensor(so
 source_test_loader = DataLoader(source_test_dataset, batch_size = args.batch_size)
 source_dataset = TensorDataset(torch.Tensor(source_x), torch.Tensor(source_y))
 source_loader = DataLoader(source_dataset, batch_size = args.batch_size, shuffle=True)
+
+# load regiontrans dictionary
+dict_path = "rt_dict/%s_%s_%s" % (args.scity, args.tcity, args.rt_dict)
+with open(dict_path, 'r') as infile:
+    rt_dict = eval(infile.read()) 
+# and transform to tensors
+matching_indices = []
+matching_weight = []
+for i in range(lng_target * lat_target):
+    lng_idx, lat_idx = idx_1d22d(i, (lng_target, lat_target))
+    (match_lng_idx,  match_lat_idx), match_weight = rt_dict[(lng_idx, lat_idx)]
+    matching_indices.append(idx_2d2id((match_lng_idx, match_lat_idx), (lng_source, lat_source)))
+    matching_weight.append(match_weight)
+matching_indices = torch.Tensor(matching_indices).long()
+matching_weight = torch.Tensor(matching_weight).view(1, -1).to(device)
 
 # Load auxiliary data: poi data
 source_poi = np.load("../data/%s/%s_poi.npy" % (scity, scity))
@@ -374,11 +414,7 @@ elif args.model == 'STNet':
 pred_optimizer = optim.Adam(net.parameters(), lr = args.learning_rate, weight_decay = args.weight_decay) 
 emb_param_list = list(mvgat.parameters()) + list(fusion.parameters()) + list(edge_disc.parameters())
 emb_optimizer = optim.Adam(emb_param_list, lr = args.learning_rate, weight_decay = args.weight_decay) 
-if args.metatrain_emb:
-    meta_param_list = list(mvgat.parameters()) + list(fusion.parameters()) + list(scoring.parameters())
-    meta_optimizer = optim.Adam(meta_param_list, lr = args.outerlr, weight_decay=args.weight_decay)
-else:
-    meta_optimizer = optim.Adam(scoring.parameters(), lr = args.outerlr, weight_decay = args.weight_decay) 
+meta_optimizer = optim.Adam(scoring.parameters(), lr = args.outerlr, weight_decay = args.weight_decay) 
 best_val_rmse = 999
 best_test_rmse = 999 
 best_test_mae = 999 
@@ -393,7 +429,11 @@ def evaluate(net_, loader, spatial_mask):
         se = 0
         ae = 0
         valid_points = 0
-        for (x, y) in loader:
+        for it_ in loader:
+            if len(it_) == 2:
+                (x, y) = it_
+            elif len(it_) == 4:
+                _, _, x, y = it_
             x = x.to(device)
             y = y.to(device)
             lng = x.shape[2]
@@ -463,6 +503,33 @@ def train_epoch(net_, loader_, optimizer_, weights = None, mask = None, num_iter
             break
     return epoch_loss
 
+def train_rt_epoch(net_, loader_, optimizer_):
+    net_.train()
+    epoch_predloss = []
+    epoch_rtloss = []
+    epoch_loss = []
+    for i, (source_x, source_y, target_x, target_y) in enumerate(loader_):
+        source_x = source_x.to(device)
+        source_y = source_y.to(device)
+        target_x = target_x.to(device)
+        target_y = target_y.to(device)
+        source_feat, _ = net_(source_x, spatial_mask = th_mask_source.bool(), return_feat = True)
+        target_feat, target_out = net_(target_x, return_feat=True)
+        batch_size = target_y.shape[0]
+        lag = target_y.shape[1]
+        target_y = target_y.view(batch_size, lag, -1)[:, :, th_mask_target.view(-1).bool()]
+        loss_pred = ((target_out - target_y) ** 2).mean(0).sum()
+        matching_source_feat = source_feat[:, matching_indices, :]
+        loss_rt = (((target_feat - matching_source_feat) ** 2).sum(2) * matching_weight).sum(1).mean()
+        loss = loss_pred + args.rt_weight * loss_rt
+        optimizer_.zero_grad()
+        loss.backward()
+        optimizer_.step()
+        epoch_predloss.append(loss_pred.item())
+        epoch_rtloss.append(loss_rt.item())
+        epoch_loss.append(loss.item())
+    return np.mean(epoch_predloss), np.mean(epoch_rtloss), np.mean(epoch_loss)
+
 def forward_emb(graphs_, in_feat_, od_adj_, poi_cos_):
     views = mvgat(graphs_, torch.Tensor(in_feat_).to(device))
     fused_emb, embs = fusion(views) 
@@ -482,15 +549,9 @@ def forward_emb(graphs_, in_feat_, od_adj_, poi_cos_):
 
     
 
-def meta_train_epoch(s_embs=None, t_embs=None, recompute=True):
+def meta_train_epoch(s_embs, t_embs):
     meta_query_losses = []
     for meta_ep in range(args.outeriter):
-        if recompute:
-            viewss = mvgat(source_graphs, torch.Tensor(source_norm_poi).to(device))
-            s_embs, _ = fusion(viewss) 
-            viewst = mvgat(target_graphs, torch.Tensor(target_norm_poi).to(device)) 
-            t_embs, _ = fusion(viewst) 
-        # print("Meta_ep", meta_ep)
         fast_losses = []
         fast_weights, bn_vars = get_weights_bn_vars(net) 
         source_weights = scoring(s_embs, t_embs)
@@ -562,20 +623,13 @@ def meta_train_epoch(s_embs=None, t_embs=None, recompute=True):
         weights_mean = (source_weights**2).mean()
         meta_loss = q_loss + weights_mean * args.weight_reg
         meta_optimizer.zero_grad() 
-        
-        
-        if recompute:
-            meta_loss.backward(inputs=meta_param_list)
-            torch.nn.utils.clip_grad_norm_(meta_param_list, max_norm = 2)
-        else:
-            meta_loss.backward(inputs = list(scoring.parameters()))
-            torch.nn.utils.clip_grad_norm_(scoring.parameters(), max_norm = 2)
-        
+        meta_loss.backward(inputs = list(scoring.parameters()))
+        torch.nn.utils.clip_grad_norm_(scoring.parameters(), max_norm = 2)
         meta_optimizer.step()
         meta_query_losses.append(q_loss.item()) 
     return np.mean(meta_query_losses)
 
-def train_emb_epoch(retain_graph=False):
+def train_emb_epoch():
     loss_source, fused_emb_s, embs_s = forward_emb(source_graphs, source_norm_poi, source_od_adj, source_poi_cos)
     loss_target, fused_emb_t, embs_t = forward_emb(target_graphs, target_norm_poi, target_od_adj, target_poi_cos)
     loss_emb = loss_source+loss_target 
@@ -605,7 +659,7 @@ def train_emb_epoch(retain_graph=False):
 
     emb_optimizer.zero_grad()
     loss = loss_emb + mmd_w * mmd_loss + et_w * loss_et
-    loss.backward(retain_graph=retain_graph)
+    loss.backward()
     emb_optimizer.step()
     return loss_emb.item(), mmd_loss.item(), loss_et.item()
 
@@ -652,13 +706,13 @@ for ep in range(num_epochs):
         edge_losses.append(loss_et_)
     # evaluate embeddings 
     with torch.no_grad():
-        viewss = mvgat(source_graphs, torch.Tensor(source_norm_poi).to(device))
-        fused_emb_s, _ = fusion(viewss) 
-        viewst = mvgat(target_graphs, torch.Tensor(target_norm_poi).to(device)) 
-        fused_emb_t, _ = fusion(viewst) 
+        views = mvgat(source_graphs, torch.Tensor(source_norm_poi).to(device))
+        fused_emb_s, _ = fusion(views) 
+        views = mvgat(target_graphs, torch.Tensor(target_norm_poi).to(device)) 
+        fused_emb_t, _ = fusion(views) 
     if ep % 2 == 0:
-        emb_s = fused_emb_s.detach().cpu().numpy()[mask_source.reshape(-1)]
-        emb_t = fused_emb_t.detach().cpu().numpy()[mask_target.reshape(-1)] 
+        emb_s = fused_emb_s.cpu().numpy()[mask_source.reshape(-1)]
+        emb_t = fused_emb_t.cpu().numpy()[mask_target.reshape(-1)] 
         mix_embs = np.concatenate([emb_s, emb_t], axis = 0)
         mix_labels = np.concatenate([source_emb_label, target_emb_label])
         logreg = LogisticRegression(max_iter=500)
@@ -668,8 +722,8 @@ for ep in range(num_epochs):
         print("[%.2fs]Epoch %d, embedding loss %.4f, mmd loss %.4f, edge loss %.4f, source cvscore %.4f, target cvscore %.4f, mixcvscore %.4f" % \
             (time.time() - start_time, ep, np.mean(emb_losses), np.mean(mmd_losses), np.mean(edge_losses), cvscore_s, cvscore_t, cvscore_mix))    
     if ep == num_epochs - 1:
-        emb_s = fused_emb_s.detach().cpu().numpy()[mask_source.reshape(-1)]
-        emb_t = fused_emb_t.detach().cpu().numpy()[mask_target.reshape(-1)] 
+        emb_s = fused_emb_s.cpu().numpy()[mask_source.reshape(-1)]
+        emb_t = fused_emb_t.cpu().numpy()[mask_target.reshape(-1)] 
         # np.save("%s.npy" % args.scity, arr = emb_s)
         # np.save("%s.npy" % args.tcity, arr = emb_t)
         with torch.no_grad():
@@ -680,10 +734,7 @@ for ep in range(num_epochs):
         
     
     # meta train scorings
-    # print(fusion.fusion_linear.weight)
-    avg_q_loss = meta_train_epoch(fused_emb_s, fused_emb_t, recompute = args.metatrain_emb) 
-    # print(fusion.fusion_linear.weight)
-    # avg_q_loss = meta_train_epoch(recompute=)
+    avg_q_loss = meta_train_epoch(fused_emb_s, fused_emb_t) 
     with torch.no_grad(): 
         source_weights = scoring(fused_emb_s, fused_emb_t)
     
@@ -715,15 +766,15 @@ for ep in range(num_epochs):
     print("Epoch %d, source validation rmse %.4f, mae %.4f" % (ep, rmse_s_val * (smax - smin), mae_s_val * (smax - smin)))
     print("Epoch %d, target validation rmse %.4f, mae %.4f" % (ep, rmse_val * (max_val - min_val), mae_val * (max_val - min_val)))
     print()
-    
-# torch.save(net.state_dict(), '../saved_models/%s/%s/%s/%s_%s.pt' % (args.scity, dataname, datatype, args.model, args.save_name))
+
+if args.save_name is not None:
+    torch.save(net.state_dict(), '../saved_models/%s/%s/%s/%s_%s.pt' % (args.scity, dataname, datatype, args.model, args.save_name))
 log_info = []
-for ep in range(num_epochs, num_epochs + 80):
+for ep in range(num_epochs, 80 + num_epochs):
     # fine-tuning 
     net.train() 
-    target_loss = train_epoch(net, target_train_loader, pred_optimizer, weights=None, mask = th_mask_target)
-    avg_target_loss = np.mean(target_loss) 
-    print('[%.2fs]Epoch %d, target loss %.4f' % (time.time() - start_time, ep, avg_target_loss))
+    avg_predloss, avg_rtloss, avg_loss = train_rt_epoch(net, target_train_loader, pred_optimizer)
+    print('[%.2fs]Epoch %d, target pred loss %.4f, rt loss %.4f' % (time.time() - start_time, ep, avg_predloss, avg_rtloss))
     net.eval() 
     rmse_val, mae_val = evaluate(net, target_val_loader, spatial_mask = th_mask_target)
     rmse_test, mae_test = evaluate(net, target_test_loader, spatial_mask = th_mask_target)

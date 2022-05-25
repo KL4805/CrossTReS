@@ -1,5 +1,5 @@
 # CrossTReS
-Repo for Selective Cross-city Transfer Learning for Traffic Prediction via Source City Region Re-weighting
+This is the repo for paper "Selective Cross-City Transfer Learning for Traffic Prediction via Source City Region Re-Weighting", to appear in KDD 2022. 
 
 ## Step 1: Data
 Go to `data` repo and unzip the `crosstres_data.zip` file. 

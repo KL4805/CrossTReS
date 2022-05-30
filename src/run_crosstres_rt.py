@@ -43,8 +43,6 @@ parser.add_argument('--et_w', type=float, default=1, help='edge type discriminat
 parser.add_argument("--ma_coef", type=float, default=0.8, help='Moving average parameter for source domain weights')
 parser.add_argument("--weight_reg", type=float, default=1e-3, help="Regularizer for the source domain weights.")
 parser.add_argument("--pretrain_iter", type=int, default=30, help='Pre-training iterations per pre-training epoch. ')
-parser.add_argument("--log_name", type=str, default=None, help='Filename for log file')
-parser.add_argument('--save_name', type=str, default=None, help='Filename for saving the model.')
 parser.add_argument("--rt_weight", type=float, default = 0.001, help='weight for the regiontrans objective')
 parser.add_argument('--rt_dict', type=str, default = 'poi', help='path of the dictionary for regiontrans')
 args = parser.parse_args()
@@ -67,7 +65,7 @@ tcity = args.tcity
 datatype = args.datatype 
 num_epochs = args.num_epochs 
 start_time = time.time() 
-print("Running CrossGTP Full, from %s to %s, %s %s experiments, with %d days of data, on %s model" % \
+print("Running CrossTReS-RT, from %s to %s, %s %s experiments, with %d days of data, on %s model" % \
     (scity, tcity, dataname, datatype, args.data_amount, args.model)) 
 
 # Load spatio temporal data
@@ -91,6 +89,7 @@ source_data, smax, smin = min_max_normalize(source_data)
 target_data, max_val, min_val = min_max_normalize(target_data)
 
 # compute bias for the date
+# used for RegionTrans to align weekdays
 bias = 0
 if args.scity == 'CHI':
     if args.tcity == 'DC':
@@ -142,7 +141,7 @@ source_dataset = TensorDataset(torch.Tensor(source_x), torch.Tensor(source_y))
 source_loader = DataLoader(source_dataset, batch_size = args.batch_size, shuffle=True)
 
 # load regiontrans dictionary
-dict_path = "../src_baselines/rt_dict/%s_%s_%s" % (args.scity, args.tcity, args.rt_dict)
+dict_path = "./rt_dict/%s_%s_%s" % (args.scity, args.tcity, args.rt_dict)
 with open(dict_path, 'r') as infile:
     rt_dict = eval(infile.read()) 
 # and transform to tensors
@@ -419,9 +418,6 @@ best_val_rmse = 999
 best_test_rmse = 999 
 best_test_mae = 999 
 
-if args.save_name is not None:
-    if not os.path.exists("../saved_models/%s/%s/%s/" % (args.scity, dataname, datatype)):
-        os.makedirs("../saved_models/%s/%s/%s/" % (args.scity, dataname, datatype))
 
 def evaluate(net_, loader, spatial_mask):
     net_.eval()
@@ -687,7 +683,6 @@ print("[%.2fs]Pretraining embedding, source cvscore %.4f, target cvscore %.4f" %
     (time.time() - start_time, cvscore_s, cvscore_t))  
 print()
 
-source_weights_log = []
 
 for ep in range(num_epochs):
     net.train()
@@ -748,7 +743,6 @@ for ep in range(num_epochs):
     if ep == 0:
         source_weights_ma = torch.ones_like(source_weights, device = device, requires_grad=False)
     source_weights_ma = ma_param * source_weights_ma + (1 - ma_param) * source_weights
-    source_weights_log.append(source_weights.cpu().numpy())
     # train network on source
     source_loss = train_epoch(net, source_loader, pred_optimizer, weights = source_weights_ma, mask = th_mask_source, num_iters = args.pretrain_iter)
     avg_source_loss = np.mean(source_loss)
@@ -767,9 +761,6 @@ for ep in range(num_epochs):
     print("Epoch %d, target validation rmse %.4f, mae %.4f" % (ep, rmse_val * (max_val - min_val), mae_val * (max_val - min_val)))
     print()
 
-if args.save_name is not None:
-    torch.save(net.state_dict(), '../saved_models/%s/%s/%s/%s_%s.pt' % (args.scity, dataname, datatype, args.model, args.save_name))
-log_info = []
 for ep in range(num_epochs, 80 + num_epochs):
     # fine-tuning 
     net.train() 
@@ -786,24 +777,6 @@ for ep in range(num_epochs, 80 + num_epochs):
     print("validation rmse %.4f, mae %.4f" % (rmse_val * (max_val - min_val), mae_val * (max_val - min_val)))
     print("test rmse %.4f, mae %.4f" % (rmse_test * (max_val - min_val), mae_test * (max_val - min_val)))
     print()
-    log_info_dict = {
-        "train_loss": avg_target_loss, 
-        "rmse_val": rmse_val * (max_val - min_val), 
-        "mae_val": mae_val * (max_val - min_val), 
-        "rmse_test": rmse_test * (max_val - min_val), 
-        "mae_test": mae_test * (max_val - min_val)
-    }
-    log_info.append(log_info_dict)   
+ 
 
 print("Best test rmse %.4f, mae %.4f" % (best_test_rmse * (max_val - min_val), best_test_mae * (max_val - min_val)))
-if args.log_name is not None:
-    log_folder_path = "../log/%s_%s_%s/" % (args.scity, args.tcity, args.dataname)
-    if not os.path.exists(log_folder_path):
-        os.makedirs(log_folder_path)
-    with open(log_folder_path + "%s_%d_%s" % (args.datatype, args.data_amount, args.log_name), 'w') as infile:
-        infile.write(json.dumps(log_info, indent=4))
-    weight_path = log_folder_path +'weights_%d_%s_%s/' % (args.data_amount, args.datatype, args.log_name)
-    if not os.path.exists(weight_path):
-        os.makedirs(weight_path)
-    for i in range(num_epochs):
-        np.save(weight_path+'%d.npy' % i, arr = source_weights_log[i])

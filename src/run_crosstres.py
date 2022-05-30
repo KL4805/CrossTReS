@@ -40,13 +40,9 @@ parser.add_argument('--outerlr', type=float, default=1e-4, help='Learning rate f
 parser.add_argument('--topk', type=int, default=15)
 parser.add_argument('--mmd_w', type=float, default=2, help='mmd weight')
 parser.add_argument('--et_w', type=float, default=2, help='edge classifier weight')
-parser.add_argument("--ma_coef", type=float, default=0, help='Moving average parameter for source domain weights')
+parser.add_argument("--ma_coef", type=float, default=0.6, help='Moving average parameter for source domain weights')
 parser.add_argument("--weight_reg", type=float, default=1e-3, help="Regularizer for the source domain weights.")
 parser.add_argument("--pretrain_iter", type=int, default=-1, help='Pre-training iterations per pre-training epoch. ')
-parser.add_argument("--log_name", type=str, default=None, help='Filename for log file')
-parser.add_argument('--save_name', type=str, default=None, help='Filename for saving the model.')
-parser.add_argument("--rt_weight", type=float, default = 0.0002, help='weight for the regiontrans objective')
-parser.add_argument('--rt_dict', type=str, default = 'poi', help='path of the dictionary for regiontrans')
 args = parser.parse_args()
 
 if args.seed != -1:
@@ -67,7 +63,7 @@ tcity = args.tcity
 datatype = args.datatype 
 num_epochs = args.num_epochs 
 start_time = time.time() 
-print("Running CrossTReS-RT, from %s to %s, %s %s experiments, with %d days of data, on %s model" % \
+print("Running CrossTReS, from %s to %s, %s %s experiments, with %d days of data, on %s model" % \
     (scity, tcity, dataname, datatype, args.data_amount, args.model)) 
 
 # Load spatio temporal data
@@ -90,21 +86,7 @@ lag = [-6, -5, -4, -3, -2, -1]
 source_data, smax, smin = min_max_normalize(source_data)
 target_data, max_val, min_val = min_max_normalize(target_data)
 
-# compute bias for the date
-bias = 0
-if args.scity == 'CHI':
-    if args.tcity == 'DC':
-        bias = 0
-    elif args.tcity == 'BOS':
-        bias = -6 * 24
-elif args.scity == 'NY':
-    if args.tcity == 'DC':
-        if dataname == 'Bike':
-            bias = 0
-        elif dataname == 'Taxi':
-            bias = -5 * 24
-    elif args.tcity == 'BOS': 
-        bias = -6 * 24
+
 
 source_train_x, source_train_y, source_val_x, source_val_y, source_test_x, source_test_y = split_x_y(source_data, lag)
 # we concatenate all source data
@@ -114,12 +96,6 @@ target_train_x, target_train_y, target_val_x, target_val_y, target_test_x, targe
 if args.data_amount != 0:
     target_train_x = target_train_x[-args.data_amount * 24:, :, :, :]
     target_train_y = target_train_y[-args.data_amount * 24:, :, :, :]
-    if bias != 0:
-        source_train_x = source_train_x[-args.data_amount * 24 + bias:bias, :, :, :]
-        source_train_y = source_train_y[-args.data_amount * 24 + bias:bias, :, :, :]
-    else:
-        source_train_x = source_train_x[-args.data_amount * 24:, :, :, :]
-        source_train_y = source_train_y[-args.data_amount * 24:, :, :, :]
 print("Source split to: x %s, y %s" % (str(source_x.shape), str(source_y.shape)))
 # print("val_x %s, val_y %s" % (str(source_val_x.shape), str(source_val_y.shape)))
 # print("test_x %s, test_y %s" % (str(source_test_x.shape), str(source_test_y.shape))) 
@@ -130,7 +106,7 @@ print("test_x %s, test_y %s" % (str(target_test_x.shape), str(target_test_y.shap
 
 
 
-target_train_dataset = TensorDataset(torch.Tensor(source_train_x), torch.Tensor(source_train_y), torch.Tensor(target_train_x), torch.Tensor(target_train_y))
+target_train_dataset = TensorDataset(torch.Tensor(target_train_x), torch.Tensor(target_train_y))
 target_val_dataset = TensorDataset(torch.Tensor(target_val_x), torch.Tensor(target_val_y))
 target_test_dataset = TensorDataset(torch.Tensor(target_test_x), torch.Tensor(target_test_y))
 target_train_loader = DataLoader(target_train_dataset, batch_size = args.batch_size, shuffle = True)
@@ -140,21 +116,6 @@ source_test_dataset = TensorDataset(torch.Tensor(source_test_x), torch.Tensor(so
 source_test_loader = DataLoader(source_test_dataset, batch_size = args.batch_size)
 source_dataset = TensorDataset(torch.Tensor(source_x), torch.Tensor(source_y))
 source_loader = DataLoader(source_dataset, batch_size = args.batch_size, shuffle=True)
-
-# load regiontrans dictionary
-dict_path = "rt_dict/%s_%s_%s" % (args.scity, args.tcity, args.rt_dict)
-with open(dict_path, 'r') as infile:
-    rt_dict = eval(infile.read()) 
-# and transform to tensors
-matching_indices = []
-matching_weight = []
-for i in range(lng_target * lat_target):
-    lng_idx, lat_idx = idx_1d22d(i, (lng_target, lat_target))
-    (match_lng_idx,  match_lat_idx), match_weight = rt_dict[(lng_idx, lat_idx)]
-    matching_indices.append(idx_2d2id((match_lng_idx, match_lat_idx), (lng_source, lat_source)))
-    matching_weight.append(match_weight)
-matching_indices = torch.Tensor(matching_indices).long()
-matching_weight = torch.Tensor(matching_weight).view(1, -1).to(device)
 
 # Load auxiliary data: poi data
 source_poi = np.load("../data/%s/%s_poi.npy" % (scity, scity))
@@ -419,9 +380,7 @@ best_val_rmse = 999
 best_test_rmse = 999 
 best_test_mae = 999 
 
-if args.save_name is not None:
-    if not os.path.exists("../saved_models/%s/%s/%s/" % (args.scity, dataname, datatype)):
-        os.makedirs("../saved_models/%s/%s/%s/" % (args.scity, dataname, datatype))
+
 
 def evaluate(net_, loader, spatial_mask):
     net_.eval()
@@ -687,7 +646,6 @@ print("[%.2fs]Pretraining embedding, source cvscore %.4f, target cvscore %.4f" %
     (time.time() - start_time, cvscore_s, cvscore_t))  
 print()
 
-source_weights_log = []
 
 for ep in range(num_epochs):
     net.train()
@@ -748,7 +706,6 @@ for ep in range(num_epochs):
     if ep == 0:
         source_weights_ma = torch.ones_like(source_weights, device = device, requires_grad=False)
     source_weights_ma = ma_param * source_weights_ma + (1 - ma_param) * source_weights
-    source_weights_log.append(source_weights.cpu().numpy())
     # train network on source
     source_loss = train_epoch(net, source_loader, pred_optimizer, weights = source_weights_ma, mask = th_mask_source, num_iters = args.pretrain_iter)
     avg_source_loss = np.mean(source_loss)
@@ -767,14 +724,12 @@ for ep in range(num_epochs):
     print("Epoch %d, target validation rmse %.4f, mae %.4f" % (ep, rmse_val * (max_val - min_val), mae_val * (max_val - min_val)))
     print()
 
-if args.save_name is not None:
-    torch.save(net.state_dict(), '../saved_models/%s/%s/%s/%s_%s.pt' % (args.scity, dataname, datatype, args.model, args.save_name))
-log_info = []
+
 for ep in range(num_epochs, 80 + num_epochs):
     # fine-tuning 
     net.train() 
-    avg_predloss, avg_rtloss, avg_loss = train_rt_epoch(net, target_train_loader, pred_optimizer)
-    print('[%.2fs]Epoch %d, target pred loss %.4f, rt loss %.4f' % (time.time() - start_time, ep, avg_predloss, avg_rtloss))
+    avg_loss = train_epoch(net, target_train_loader, pred_optimizer, mask = th_mask_target)
+    print('[%.2fs]Epoch %d, target pred loss %.4f' % (time.time() - start_time, ep, np.mean(avg_loss)))
     net.eval() 
     rmse_val, mae_val = evaluate(net, target_val_loader, spatial_mask = th_mask_target)
     rmse_test, mae_test = evaluate(net, target_test_loader, spatial_mask = th_mask_target)
@@ -786,24 +741,7 @@ for ep in range(num_epochs, 80 + num_epochs):
     print("validation rmse %.4f, mae %.4f" % (rmse_val * (max_val - min_val), mae_val * (max_val - min_val)))
     print("test rmse %.4f, mae %.4f" % (rmse_test * (max_val - min_val), mae_test * (max_val - min_val)))
     print()
-    log_info_dict = {
-        "train_loss": avg_target_loss, 
-        "rmse_val": rmse_val * (max_val - min_val), 
-        "mae_val": mae_val * (max_val - min_val), 
-        "rmse_test": rmse_test * (max_val - min_val), 
-        "mae_test": mae_test * (max_val - min_val)
-    }
-    log_info.append(log_info_dict)   
+
 
 print("Best test rmse %.4f, mae %.4f" % (best_test_rmse * (max_val - min_val), best_test_mae * (max_val - min_val)))
-if args.log_name is not None:
-    log_folder_path = "../log/%s_%s_%s/" % (args.scity, args.tcity, args.dataname)
-    if not os.path.exists(log_folder_path):
-        os.makedirs(log_folder_path)
-    with open(log_folder_path + "%s_%d_%s" % (args.datatype, args.data_amount, args.log_name), 'w') as infile:
-        infile.write(json.dumps(log_info, indent=4))
-    weight_path = log_folder_path +'weights_%d_%s_%s/' % (args.data_amount, args.datatype, args.log_name)
-    if not os.path.exists(weight_path):
-        os.makedirs(weight_path)
-    for i in range(num_epochs):
-        np.save(weight_path+'%d.npy' % i, arr = source_weights_log[i])
+
